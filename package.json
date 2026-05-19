@@ -6,6 +6,10 @@
     "main": "dist/index.js",
     "module": "dist/index.js",
     "types": "dist/index.d.ts",
+    "exports": {
+        ".": "./src/index.ts",
+        "./worklet": "./src/worklet_processor.ts"
+    },
     "scripts": {
         "build": "npm run build:fast",
         "build:fast": "npm run build:npm",
