@@ -8,7 +8,7 @@
     "types": "dist/index.d.ts",
     "scripts": {
         "build": "npm run test:types && npm run build:fast",
-        "build:fast": "npm run build:npm && npm run build:pages",
+        "build:fast": "npm run build:npm",
         "build:npm": "tsx build_scripts/build_npm.ts",
         "build:pages": "tsx build_scripts/build_pages.ts",
         "format": "prettier . --write",
