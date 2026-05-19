@@ -17,7 +17,7 @@
         "release": "tsx build_scripts/debug_disable.ts",
         "prepack": "npm run build:npm",
         "prepublishOnly": "npm run release",
-        "prepare": "husky install"
+        "prepare": ""
     },
     "repository": {
         "type": "git",
@@ -83,7 +83,7 @@
         "*.{html,json,md,yml,yaml,css}": "prettier --write"
     },
     "dependencies": {
-        "spessasynth_core": "latest"
+        "spessasynth_core": "workspace:*"
     },
     "allowScripts": {
         "esbuild@0.28.0": true
