@@ -4,6 +4,7 @@ import type { SynthConfig } from "../basic/types.ts";
 import { BasicSynthesizer } from "../basic/basic_synthesizer.ts";
 import type { OfflineRenderWorkletData } from "../types.ts";
 import { fillWithDefaults } from "../../utils/fill_with_defaults.ts";
+import type { EngineCommand } from "./transport_scheduler.ts";
 
 /**
  * This synthesizer uses an audio worklet node containing the processor.
@@ -43,7 +44,8 @@ export class WorkletSynthesizer extends BasicSynthesizer {
                 numberOfOutputs,
                 processorOptions: {
                     oneOutput: synthConfig.oneOutput,
-                    eventsEnabled: synthConfig.eventsEnabled
+                    eventsEnabled: synthConfig.eventsEnabled,
+                    engineSab: synthConfig.engineSab
                 }
             });
         } catch (error) {
@@ -82,6 +84,15 @@ export class WorkletSynthesizer extends BasicSynthesizer {
         await new Promise((r) =>
             this.awaitWorkerResponse("startOfflineRender", r)
         );
+    }
+
+    /**
+     * Sends a transport command to the in-worklet TransportScheduler. The scheduler
+     * is active when `engineSab` was passed at construction time. Commands are routed
+     * to the scheduler by the worklet processor's pre-handler.
+     */
+    public sendEngineCommand(cmd: EngineCommand): void {
+        this.worklet.port.postMessage(cmd);
     }
 
     // noinspection JSUnusedGlobalSymbols

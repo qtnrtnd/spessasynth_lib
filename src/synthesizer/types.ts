@@ -29,6 +29,11 @@ export interface PassedProcessorParameters {
      * If the synth should use one output with 32 channels (2 audio channels for each midi channel).
      */
     oneOutput: boolean;
+    /**
+     * Optional SharedArrayBuffer for the in-worklet transport scheduler.
+     * See SynthConfig.engineSab for details.
+     */
+    engineSab?: SharedArrayBuffer;
 }
 
 export interface OfflineRenderWorkletData {

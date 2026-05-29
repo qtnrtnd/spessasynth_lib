@@ -17,6 +17,13 @@ import {
 export class WorkletSynthesizerCore extends BasicSynthesizerCore {
     protected alive = true;
     /**
+     * Optional pre-handler invoked before the core's own message handler.
+     * Return true to mark the message as fully consumed and skip default handling.
+     * Used by the wrapping AudioWorkletProcessor to route `engine:*` transport
+     * commands to an in-worklet TransportScheduler with no postMessage hop.
+     */
+    public onPreMessage?: (data: unknown) => boolean;
+    /**
      * Instead of 18 stereo outputs, there's one with 32 channels (no effects).
      */
     private readonly oneOutputMode: boolean;
@@ -45,57 +52,42 @@ export class WorkletSynthesizerCore extends BasicSynthesizerCore {
 
         void this.synthesizer.processorInitialized.then(() => {
             // Receive messages from the main thread
-            this.port.onmessage = (e: MessageEvent<BasicSynthesizerMessage>) =>
+            this.port.onmessage = (
+                e: MessageEvent<BasicSynthesizerMessage>
+            ) => {
+                if (this.onPreMessage?.(e.data) === true) return;
                 this.handleMessage(e.data);
+            };
             this.postReady("sf3Decoder", null);
         });
     }
 
-    // noinspection JSUnusedGlobalSymbols
+    /** Whether the worklet is still alive (returns false from process() to terminate). */
+    public get isAlive(): boolean {
+        return this.alive;
+    }
+
+    /** Whether the synth is configured for one-output 32-channel mode. */
+    public get isOneOutputMode(): boolean {
+        return this.oneOutputMode;
+    }
+
     /**
-     * The audio worklet processing logic
-     * @param _inputs required by WebAudioAPI
-     * @param outputs the outputs to write to, only the first two channels of each are populated
-     * @returns true unless it's not alive
+     * Per-quantum pre-render step: tick any built-in MIDI sequencers.
+     * Call this before driving rendering (manually or via process()).
      */
-    public process(
-        _inputs: Float32Array[][],
-        outputs: Float32Array[][]
-    ): boolean {
-        if (!this.alive) {
-            return false;
-        }
-        // Process sequencer
+    public tickSequencers(): void {
         for (const sq of this.sequencers) {
             sq.processTick();
         }
+    }
 
-        if (this.oneOutputMode) {
-            const out = outputs[0];
-            // 1 output with 32 channels.
-            // Channels are ordered as follows:
-            // MidiChannel1L, midiChannel1R,
-            // MidiChannel2L, midiChannel2R
-            // And so on
-            const channelMap: Float32Array[][] = [];
-            for (let i = 0; i < 32; i += 2) {
-                channelMap.push([out[i], out[i + 1]]);
-            }
-            this.synthesizer.setSystemParameter("effectsEnabled", false);
-            // Effects are disabled
-            this.synthesizer.processSplit(channelMap, out[0], out[0]);
-        } else {
-            // 17 outputs, each a stereo one
-            // 0: Effects
-            // 2: channel 1
-            // 3: channel 2
-            // And so on
-            this.synthesizer.processSplit(
-                outputs.slice(1),
-                outputs[0][0],
-                outputs[0][1]
-            );
-        }
+    /**
+     * Per-quantum post-render step: post sequencer sync messages and update
+     * the voice count tracker. Call this after driving rendering yourself,
+     * if you bypass process().
+     */
+    public afterRender(): void {
         const t = this.synthesizer.currentTime;
         if (
             this.eventsEnabled &&
@@ -129,7 +121,53 @@ export class WorkletSynthesizerCore extends BasicSynthesizerCore {
                 currentTime: t,
                 data: cv
             });
+    }
 
+    // noinspection JSUnusedGlobalSymbols
+    /**
+     * The audio worklet processing logic — full pipeline.
+     * Backward compatible; used when no external scheduler drives rendering.
+     * @param _inputs required by WebAudioAPI
+     * @param outputs the outputs to write to, only the first two channels of each are populated
+     * @returns true unless it's not alive
+     */
+    public process(
+        _inputs: Float32Array[][],
+        outputs: Float32Array[][]
+    ): boolean {
+        if (!this.alive) {
+            return false;
+        }
+        this.tickSequencers();
+
+        if (this.oneOutputMode) {
+            const out = outputs[0];
+            // 1 output with 32 channels.
+            // Channels are ordered as follows:
+            // MidiChannel1L, midiChannel1R,
+            // MidiChannel2L, midiChannel2R
+            // And so on
+            const channelMap: Float32Array[][] = [];
+            for (let i = 0; i < 32; i += 2) {
+                channelMap.push([out[i], out[i + 1]]);
+            }
+            this.synthesizer.setSystemParameter("effectsEnabled", false);
+            // Effects are disabled
+            this.synthesizer.processSplit(channelMap, out[0], out[0]);
+        } else {
+            // 17 outputs, each a stereo one
+            // 0: Effects
+            // 2: channel 1
+            // 3: channel 2
+            // And so on
+            this.synthesizer.processSplit(
+                outputs.slice(1),
+                outputs[0][0],
+                outputs[0][1]
+            );
+        }
+
+        this.afterRender();
         return true;
     }
 

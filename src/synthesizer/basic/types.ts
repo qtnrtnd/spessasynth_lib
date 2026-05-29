@@ -16,6 +16,15 @@ export interface SynthConfig {
      * If the event system should be enabled. This can only be set once.
      */
     eventsEnabled: boolean;
+
+    /**
+     * Optional SharedArrayBuffer for the in-worklet transport scheduler. When set,
+     * the worklet runs an in-thread scheduler that dispatches MIDI events directly
+     * into the synth core (no postMessage hops between scheduling and synthesis).
+     * The buffer carries transport state back to the main thread via lock-free
+     * SyncStream protocol. Required SAB byte length: 64.
+     */
+    engineSab?: SharedArrayBuffer;
 }
 
 export interface AudioNodeCreators {
