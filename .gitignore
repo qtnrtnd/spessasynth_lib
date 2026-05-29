@@ -75,3 +75,6 @@ $RECYCLE.BIN/
 /spessasynth_lib.wiki/
 dist/
 /gh-pages/
+
+# Turborepo cache
+.turbo/
