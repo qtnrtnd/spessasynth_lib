@@ -7,7 +7,10 @@
     "module": "dist/index.js",
     "types": "dist/index.d.ts",
     "exports": {
-        ".": "./src/index.ts",
+        ".": {
+            "types": "./dist/index.d.ts",
+            "default": "./src/index.ts"
+        },
         "./worklet": "./src/worklet_processor.ts"
     },
     "scripts": {

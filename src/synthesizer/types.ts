@@ -74,6 +74,11 @@ export interface WorkletSBKManagerData {
     deleteSoundBank: string;
     // NewOrder<string[]> // where string is the id
     rearrangeSoundBanks: string[];
+    // Network-lazy: inject audio data into a bank's lazy samples.
+    loadSamples: {
+        id: string;
+        samples: { sampleId: number; data: ArrayBuffer }[];
+    };
 }
 
 export interface WorkletKMManagerData {

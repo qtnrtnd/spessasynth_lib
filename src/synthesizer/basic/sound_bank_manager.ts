@@ -79,6 +79,25 @@ export class SoundBankManager {
 
     // noinspection JSUnusedGlobalSymbols
     /**
+     * Injects audio data into a bank's lazy samples (network-lazy loading).
+     * The `ArrayBuffer`s are transferred (zero-copy) to the worklet.
+     * @param id The bank to inject into.
+     * @param samples The sample data keyed by `sampleId` (index in `samples`).
+     */
+    public async loadSamples(
+        id: string,
+        samples: { sampleId: number; data: ArrayBuffer }[]
+    ) {
+        this.sendToWorklet(
+            "loadSamples",
+            { id, samples },
+            samples.map((s) => s.data)
+        );
+        await this.awaitResponse();
+    }
+
+    // noinspection JSUnusedGlobalSymbols
+    /**
      * Deletes a sound bank with the given ID.
      * @param id The sound bank to delete.
      */

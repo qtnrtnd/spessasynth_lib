@@ -381,6 +381,19 @@ export abstract class BasicSynthesizerCore {
                         case "rearrangeSoundBanks": {
                             sfManager.priorityOrder = sfManMsg.data;
                             this.postReady("soundBankManager", null);
+                            break;
+                        }
+
+                        case "loadSamples": {
+                            sfManager.loadSamples(
+                                sfManMsg.data.id,
+                                sfManMsg.data.samples
+                            );
+                            // Invalidate the voice cache so voices skipped while
+                            // their samples were missing re-resolve now.
+                            this.synthesizer.clearCache();
+                            this.postReady("soundBankManager", null);
+                            break;
                         }
                     }
                 } catch (error) {
