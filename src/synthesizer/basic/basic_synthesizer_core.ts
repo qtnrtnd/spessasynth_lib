@@ -395,6 +395,14 @@ export abstract class BasicSynthesizerCore {
                             this.postReady("soundBankManager", null);
                             break;
                         }
+
+                        case "buildPreset": {
+                            // Assemble a custom kit; regenerating the preset list
+                            // invalidates the voice cache via its change callback.
+                            sfManager.buildPreset(sfManMsg.data);
+                            this.postReady("soundBankManager", null);
+                            break;
+                        }
                     }
                 } catch (error) {
                     this.post({

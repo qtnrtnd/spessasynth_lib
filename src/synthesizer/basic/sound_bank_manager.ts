@@ -1,4 +1,8 @@
-import { type SoundBankManagerListEntry, SpessaLog } from "spessasynth_core";
+import {
+    type CustomKitRecipe,
+    type SoundBankManagerListEntry,
+    SpessaLog
+} from "spessasynth_core";
 import type {
     BasicSynthesizerMessage,
     WorkletSBKManagerData
@@ -93,6 +97,18 @@ export class SoundBankManager {
             { id, samples },
             samples.map((s) => s.data)
         );
+        await this.awaitResponse();
+    }
+
+    // noinspection JSUnusedGlobalSymbols
+    /**
+     * Assembles a custom drum kit as a new preset in a bank, sharing its samples
+     * (cf. `concept/audio/drums.md` §3). The slots' samples must already be
+     * resident (load them with {@link loadSamples} first).
+     * @param recipe The kit recipe (its `id` selects the target bank).
+     */
+    public async buildPreset(recipe: CustomKitRecipe) {
+        this.sendToWorklet("buildPreset", recipe);
         await this.awaitResponse();
     }
 

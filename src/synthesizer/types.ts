@@ -2,6 +2,7 @@ import {
     type BasicMIDI,
     type ChannelMIDIParameter,
     type ChannelSystemParameter,
+    type CustomKitRecipe,
     type DLSWriteOptions,
     type GlobalMIDIParameter,
     type GlobalSystemParameter,
@@ -79,6 +80,8 @@ export interface WorkletSBKManagerData {
         id: string;
         samples: { sampleId: number; data: ArrayBuffer }[];
     };
+    // Assemble a custom drum kit as a new preset in a bank (shares its samples).
+    buildPreset: CustomKitRecipe;
 }
 
 export interface WorkletKMManagerData {
