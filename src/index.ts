@@ -13,5 +13,6 @@ export { WebMIDILinkHandler } from "./external_midi/web_midi_link.js";
 export { DEFAULT_SYNTH_CONFIG } from "./synthesizer/basic/synth_config.ts";
 export type {
     EngineCommand,
+    OverlayHit,
     WorkletNote
 } from "./synthesizer/worklet/transport_scheduler.ts";

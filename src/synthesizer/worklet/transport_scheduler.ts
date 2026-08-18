@@ -12,6 +12,10 @@
 // All scheduling is in pulse space (integers), so consecutive events at the same musical
 // Position have literally identical sample offsets — no rounding ambiguity. The walker's
 // Deterministic sort then guarantees the release-before-attack order.
+//
+// `overlayNotes` (engine:previewOverlay) rides the same per-quantum gathering and sample-
+// Accurate dispatch as `notes`, for a one-shot preview bar overlaid on the live composition —
+// The one difference is it is never re-populated on a loop wrap, so it plays exactly once.
 
 import { MIDIMessageTypes, type SpessaSynthProcessor } from "spessasynth_core";
 
@@ -20,6 +24,12 @@ const Quarter = 960;
 const Bar = Quarter << 2;
 const samplesToPulses = (n: number, bpm: number, sr: number) =>
     ((n / sr) * bpm * Quarter) / 60;
+// The bar already underway, not the next one — a preview overlay joins in
+// Progress instead of waiting up to a full bar to start (see
+// "engine:previewOverlay" below). handleCommand and renderBlock run on the
+// Same audio-thread tick, so there's no skew between the position read here
+// And the p0 renderBlock uses next.
+const barStartPulse = (pos: number): number => Math.floor(pos / Bar) * Bar;
 
 // SAB layout (matches client's engine/sync/EngineStateSchema.ts)
 const STATE_FLAG_OFFSET = 0;
@@ -48,6 +58,19 @@ export interface WorkletNote {
     channel: number;
 }
 
+// A one-shot preview hit (drumkit audition, previewer.ts), relative to the
+// Pattern's own start — the worklet anchors it to a real pulse itself
+// (barStartPulse against its own live `position`), never a main-thread one.
+// A hit whose offset already lies behind the current position when the
+// Command lands is dropped, not replayed late — the bar joins in progress.
+export interface OverlayHit {
+    offsetPulses: number;
+    durationPulses: number;
+    midi: number;
+    vel: number;
+    channel: number;
+}
+
 export type EngineCommand =
     | { type: "engine:play"; fromPulse?: number }
     | { type: "engine:pause"; rewindToPulse?: number }
@@ -59,7 +82,8 @@ export type EngineCommand =
           type: "engine:updateLoop";
           loopStart: number;
           loopEnd: number;
-      };
+      }
+    | { type: "engine:previewOverlay"; hits: OverlayHit[] };
 
 // Event type ranks for sort. Lower rank = processed first at equal sampleOffset.
 const TYPE_NOTE_OFF = 0;
@@ -70,6 +94,16 @@ interface ScheduledEvent {
     sampleOffset: number;
     typeRank: number;
     // For note events:
+    midi: number;
+    vel: number;
+    channel: number;
+}
+
+// An OverlayHit anchored to a real pulse — same shape, no `id`: overlay hits
+// are never diffed against a previous list, only ever replaced wholesale.
+interface OverlayNote {
+    pulse: number;
+    durationPulses: number;
     midi: number;
     vel: number;
     channel: number;
@@ -87,6 +121,11 @@ export class TransportScheduler {
     // The user's mental model: deleting a held note should let it ring to its end,
     // Not silence it abruptly. Cleared on pause/stop/seek/loop-wrap.
     private phantomNotes: WorkletNote[] = [];
+    // One-shot preview hits (previewer.ts's drumkit audition), overlaid on top
+    // of the live composition. Never re-populated on loop wrap, unlike `notes`
+    // — each entry is spliced out the moment its noteOff fires, so a bar plays
+    // exactly once. See clearOverlay.
+    private overlayNotes: OverlayNote[] = [];
     private loopCount = 0;
     private readonly flag: Uint8Array;
     private readonly view: DataView;
@@ -101,6 +140,18 @@ export class TransportScheduler {
         Atomics.store(this.flag, STATE_FLAG_OFFSET, STATE_READ);
     }
 
+    /** Force-releases and drops every pending overlay hit. A noteOff for a hit
+     *  that never actually sounded is a harmless no-op (same treatment
+     *  phantomNotes gets on wrap) — cheaper than tracking which ones fired. */
+    private clearOverlay(synth: SpessaSynthProcessor): void {
+        for (const n of this.overlayNotes) {
+            synth.processMessage([noteOffByte(n.channel), n.midi], 0, {
+                time: 0
+            });
+        }
+        this.overlayNotes.length = 0;
+    }
+
     public handleCommand(
         cmd: EngineCommand,
         synth: SpessaSynthProcessor
@@ -108,6 +159,15 @@ export class TransportScheduler {
         switch (cmd.type) {
             case "engine:play": {
                 if (cmd.fromPulse !== undefined) this.position = cmd.fromPulse;
+                // A position left outside the loop by an edit made at rest
+                // (see the isPlaying guard in "engine:updateLoop" below) would
+                // otherwise run forward forever once playback starts, since the
+                // wrap check further down only fires while already inside the
+                // loop — so reclaim it into the loop right here, at the moment
+                // playback actually begins.
+                if (this.position < this.loopStart || this.position >= this.loopEnd) {
+                    this.position = this.loopStart;
+                }
                 this.isPlaying = true;
                 // Re-trigger notes whose pulse range straddles the resume position
                 // So a paused-mid-sustain resumes audibly instead of silent until the
@@ -132,6 +192,7 @@ export class TransportScheduler {
                     this.position = cmd.rewindToPulse;
                 this.isPlaying = false;
                 this.phantomNotes.length = 0;
+                this.clearOverlay(synth);
                 synth.stopAllChannels(false);
                 return;
             }
@@ -140,6 +201,7 @@ export class TransportScheduler {
                 this.position = this.loopStart;
                 this.loopCount = 0;
                 this.phantomNotes.length = 0;
+                this.clearOverlay(synth);
                 synth.stopAllChannels(false);
                 return;
             }
@@ -148,6 +210,7 @@ export class TransportScheduler {
                 // Doesn't bleed into the new position.
                 this.position = cmd.pulse;
                 this.phantomNotes.length = 0;
+                this.clearOverlay(synth);
                 synth.stopAllChannels(true);
                 return;
             }
@@ -199,12 +262,43 @@ export class TransportScheduler {
             case "engine:updateLoop": {
                 this.loopStart = cmd.loopStart;
                 this.loopEnd = cmd.loopEnd;
-                if (this.position >= this.loopEnd) {
+                // Only reclaim the transport into the (possibly shrunk) loop
+                // while it's actually advancing. At rest (paused/stopped) the
+                // composer is just editing notes — the displayed playhead must
+                // stay exactly where they left it, even past the new loop end;
+                // "engine:play" reclaims it if needed once playback resumes.
+                if (this.isPlaying && this.position >= this.loopEnd) {
                     this.position = this.loopStart;
                     this.loopCount++;
                     this.phantomNotes.length = 0;
                     synth.stopAllChannels(true);
                 }
+                return;
+            }
+            case "engine:previewOverlay": {
+                // A fresh preview always replaces, never stacks with, the last
+                // one — cancel whatever is still pending first.
+                this.clearOverlay(synth);
+                // Dropped, not queued: if playback isn't actually running when
+                // This lands (a main-thread/worklet race around a pause), "the
+                // Bar underway" means nothing, and installing stale hits would
+                // Leak into a later, unrelated resume.
+                if (!this.isPlaying || cmd.hits.length === 0) return;
+                // Anchor to the bar already underway, not the next one, and
+                // Join it in progress: a hit whose offset is already behind
+                // The current position is dropped rather than replayed late,
+                // So triggering mid-bar plays only what is still ahead.
+                const anchor = barStartPulse(this.position);
+                const elapsed = this.position - anchor;
+                this.overlayNotes = cmd.hits
+                    .filter((h) => h.offsetPulses >= elapsed)
+                    .map((h) => ({
+                        pulse: anchor + h.offsetPulses,
+                        durationPulses: h.durationPulses,
+                        midi: h.midi,
+                        vel: h.vel,
+                        channel: h.channel
+                    }));
                 return;
             }
         }
@@ -299,6 +393,32 @@ export class TransportScheduler {
                     this.phantomNotes.splice(i, 1);
                 }
             }
+            // Preview overlay: one-shot hits, not part of the loop — same
+            // interval rule as `notes`, but spliced out the moment their
+            // noteOff fires so they never repeat on the next pass.
+            for (let i = this.overlayNotes.length - 1; i >= 0; i--) {
+                const n = this.overlayNotes[i];
+                if (n.pulse >= p0 && n.pulse < segmentEnd) {
+                    this.events.push({
+                        sampleOffset: pulseToSampleInSegment(n.pulse),
+                        typeRank: TYPE_NOTE_ON,
+                        midi: n.midi,
+                        vel: n.vel,
+                        channel: n.channel
+                    });
+                }
+                const overlayEnd = n.pulse + n.durationPulses;
+                if (overlayEnd > p0 && overlayEnd <= segmentEnd) {
+                    this.events.push({
+                        sampleOffset: pulseToSampleInSegment(overlayEnd),
+                        typeRank: TYPE_NOTE_OFF,
+                        midi: n.midi,
+                        vel: 0,
+                        channel: n.channel
+                    });
+                    this.overlayNotes.splice(i, 1);
+                }
+            }
             if (wrapsInSegment) {
                 this.events.push({
                     sampleOffset: pulseToSampleInSegment(this.loopEnd),
@@ -373,6 +493,11 @@ export class TransportScheduler {
                     });
                 }
                 this.phantomNotes.length = 0;
+                // A preview bar shorter than the loop it was overlaid on would
+                // already be spliced out above; one that outlasts the loop's
+                // wrap is the accepted residual (soundfonts.md §7.4) — force
+                // it off rather than let it hang or bleed into the next pass.
+                this.clearOverlay(synth);
             } else {
                 p0 = segmentEnd;
             }
