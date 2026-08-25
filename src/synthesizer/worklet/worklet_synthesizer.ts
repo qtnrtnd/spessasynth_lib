@@ -4,7 +4,10 @@ import type { SynthConfig } from "../basic/types.ts";
 import { BasicSynthesizer } from "../basic/basic_synthesizer.ts";
 import type { OfflineRenderWorkletData } from "../types.ts";
 import { fillWithDefaults } from "../../utils/fill_with_defaults.ts";
-import type { EngineCommand } from "./transport_scheduler.ts";
+import type {
+    EngineCommand,
+    EngineStateMessage
+} from "./transport_scheduler.ts";
 
 /**
  * This synthesizer uses an audio worklet node containing the processor.
@@ -87,12 +90,35 @@ export class WorkletSynthesizer extends BasicSynthesizer {
     }
 
     /**
-     * Sends a transport command to the in-worklet TransportScheduler. The scheduler
-     * is active when `engineSab` was passed at construction time. Commands are routed
-     * to the scheduler by the worklet processor's pre-handler.
+     * Sends a transport command to the in-worklet TransportScheduler. Commands are
+     * routed to the scheduler by the worklet processor's pre-handler.
      */
     public sendEngineCommand(cmd: EngineCommand): void {
         this.worklet.port.postMessage(cmd);
+    }
+
+    /**
+     * Subscribes to transport state published by the in-worklet scheduler. Only
+     * ever fires when the synth was constructed WITHOUT an `engineSab`: with one,
+     * the scheduler writes to that buffer and says nothing on the port. Returns
+     * an unsubscribe.
+     */
+    public onEngineState(
+        listener: (state: EngineStateMessage) => void
+    ): () => void {
+        const handler = (e: MessageEvent): void => {
+            const data: unknown = e.data;
+            if (
+                typeof data !== "object" ||
+                data === null ||
+                (data as { type?: unknown }).type !== "engine:state"
+            ) {
+                return;
+            }
+            listener(data as EngineStateMessage);
+        };
+        this.worklet.port.addEventListener("message", handler);
+        return () => this.worklet.port.removeEventListener("message", handler);
     }
 
     // noinspection JSUnusedGlobalSymbols
