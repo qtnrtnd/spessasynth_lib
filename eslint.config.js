@@ -33,7 +33,13 @@ export default tseslint.config(
                 "error",
                 "always",
                 {
-                    ignorePattern: "noinspection|prettier"
+                    ignorePattern: "noinspection|prettier",
+                    // A block of consecutive `//` lines is one comment, not many:
+                    // Without this the rule reads every continuation line as a new
+                    // Comment and its fixer capitalizes mid-sentence, which is how
+                    // Prose in this file ended up reading "At the same pulse" and
+                    // "And invokes processMessageInternal".
+                    ignoreConsecutiveComments: true
                 }
             ],
             "@typescript-eslint/no-misused-promises": [
@@ -105,7 +111,9 @@ export default tseslint.config(
                 "error",
                 "always",
                 {
-                    ignorePattern: "noinspection"
+                    ignorePattern: "noinspection",
+                    // See the .ts block above.
+                    ignoreConsecutiveComments: true
                 }
             ],
 
