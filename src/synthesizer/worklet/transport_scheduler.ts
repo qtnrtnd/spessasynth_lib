@@ -24,6 +24,8 @@ const Quarter = 960;
 const Bar = Quarter << 2;
 const samplesToPulses = (n: number, bpm: number, sr: number) =>
     ((n / sr) * bpm * Quarter) / 60;
+const pulsesToSamples = (p: number, bpm: number, sr: number) =>
+    ((p * 60) / (bpm * Quarter)) * sr;
 // The bar already underway, not the next one — a preview overlay joins in
 // Progress instead of waiting up to a full bar to start (see
 // "engine:previewOverlay" below). handleCommand and renderBlock run on the
@@ -540,13 +542,43 @@ export class TransportScheduler {
             const wrapsInSegment =
                 segmentP1 > this.loopEnd && this.loopEnd > p0;
             const segmentEnd = wrapsInSegment ? this.loopEnd : segmentP1;
-            const endOfSegmentSample = cursorSample + remainingSamples;
+            // How many samples this segment actually spans — NOT the rest of the
+            // quantum. A wrapping segment ends at loopEnd, somewhere inside the
+            // block, and claiming the whole remainder for it was two bugs in one:
+            // the outer loop could never re-enter (cursorSample reached
+            // RENDER_QUANTUM), so the pulses past loopEnd were discarded and every
+            // wrap cost the transport whatever was left of the quantum — 2 beats
+            // at 128 BPM is 351.5625 quanta at 48 kHz, so the loop ran 352 of them
+            // and took 938.67 ms instead of 937.5, every single pass, always the
+            // same way. A composer's monitor therefore walked away from the sync
+            // grid at 1.17 ms a loop for the length of a turn. And the events of a
+            // wrapping segment were spread over the full block besides
+            // (`sampleSpan`), so their offsets were stretched to match.
+            //
+            // At least one sample when wrapping, so a remainder too small to round
+            // to one still makes progress and the outer loop cannot spin.
+            const segmentSamples = wrapsInSegment
+                ? Math.max(
+                      1,
+                      Math.min(
+                          remainingSamples,
+                          Math.round(
+                              pulsesToSamples(
+                                  this.loopEnd - p0,
+                                  this.bpm,
+                                  sampleRate
+                              )
+                          )
+                      )
+                  )
+                : remainingSamples;
+            const endOfSegmentSample = cursorSample + segmentSamples;
 
             // Gather events whose pulse falls in [p0, segmentEnd) and compute their
             // Sample offset relative to the quantum start.
             this.events.length = 0;
             const pulseSpan = segmentEnd - p0;
-            const sampleSpan = remainingSamples;
+            const sampleSpan = segmentSamples;
             const cursorAtSegmentStart = cursorSample;
             const pulseToSampleInSegment = (pulse: number): number => {
                 if (pulseSpan <= 0) return cursorAtSegmentStart;
