@@ -93,6 +93,14 @@ export interface OverlayHit {
     channel: number;
 }
 
+// One click of the metronome grid, in the same pulse space as `notes` and
+// re-read on every loop pass exactly as they are. The host owns the grid (it is
+// the side that knows the meter); the transport owns WHEN each one sounds.
+export interface ClickPoint {
+    pulse: number;
+    accent: boolean;
+}
+
 export type EngineCommand =
     | { type: "engine:play"; fromPulse?: number }
     | { type: "engine:pause"; rewindToPulse?: number }
@@ -105,7 +113,13 @@ export type EngineCommand =
           loopStart: number;
           loopEnd: number;
       }
-    | { type: "engine:previewOverlay"; hits: OverlayHit[] };
+    | { type: "engine:previewOverlay"; hits: OverlayHit[] }
+    | {
+          type: "engine:clickSamples";
+          high: Float32Array;
+          low: Float32Array;
+      }
+    | { type: "engine:updateClicks"; clicks: ClickPoint[] };
 
 // Event type ranks for sort. Lower rank = processed first at equal sampleOffset.
 const TYPE_NOTE_OFF = 0;
@@ -134,6 +148,20 @@ interface OverlayNote {
     vel: number;
     channel: number;
 }
+
+// A click that has been triggered and is still being written into the output.
+// `at` is where it starts in the quantum being rendered — its own offset on the
+// quantum that triggered it, 0 on every one after.
+interface ActiveClick {
+    data: Float32Array;
+    read: number;
+    at: number;
+}
+
+// The click track is a handful of milliseconds at a time and two of them can
+// only overlap on a grid no editor can produce. The cap is there so a malformed
+// one cannot grow this without bound.
+const MAX_ACTIVE_CLICKS = 8;
 
 export class TransportScheduler {
     private bpm = 120;
@@ -166,6 +194,18 @@ export class TransportScheduler {
     // — each entry is spliced out the moment its noteOff fires, so a bar plays
     // exactly once. See clearOverlay.
     private overlayNotes: OverlayNote[] = [];
+    // The metronome. It is NOT a synth voice: no preset, no channel, no
+    // note — the two samples are mixed into the output by `mixClicks` below,
+    // after the block has been rendered. What it takes from the transport is
+    // the only thing it actually needs, which is the same pulse space the
+    // notes are dispatched from: a click and the note it marks are decided on
+    // the same thread, in the same block, from the same position. A host-side
+    // scheduler cannot have that — it works from an anchor this thread
+    // published, which is one publication old by the time it reads it.
+    private clickHigh: Float32Array | null = null;
+    private clickLow: Float32Array | null = null;
+    private clicks: ClickPoint[] = [];
+    private readonly activeClicks: ActiveClick[] = [];
     private loopCount = 0;
     private readonly flag: Uint8Array | null;
     private readonly view: DataView | null;
@@ -506,6 +546,21 @@ export class TransportScheduler {
                     }));
                 return;
             }
+            case "engine:clickSamples": {
+                // Mono, already at this thread's sample rate — the host decodes
+                // them through the very AudioContext this worklet runs in, so
+                // there is no resampling to do here and none to get wrong.
+                this.clickHigh = cmd.high;
+                this.clickLow = cmd.low;
+                return;
+            }
+            case "engine:updateClicks": {
+                // Wholesale, like the overlay and unlike `notes`: a click has no
+                // identity to diff and nothing to strand — what is already
+                // sounding is a few milliseconds that finish on their own.
+                this.clicks = cmd.clicks;
+                return;
+            }
         }
     }
 
@@ -521,6 +576,10 @@ export class TransportScheduler {
     ): void {
         if (!this.isPlaying) {
             this.renderSub(synth, outputs, 0, RENDER_QUANTUM);
+            // A click triggered a millisecond before the transport was stopped
+            // still finishes: it is six milliseconds long, and cutting one on
+            // its way out is a step to zero — a pop where there was a click.
+            this.mixClicks(outputs);
             this.publishState(currentTime, sampleRate);
             return;
         }
@@ -616,6 +675,16 @@ export class TransportScheduler {
                         channel: n.channel,
                         noteId: heldId
                     });
+                }
+            }
+            // The metronome, on the same interval rule as a noteOn — [p0,
+            // segmentEnd), so a click sounds in exactly one segment and once per
+            // loop pass. It takes no event: nothing is dispatched to the synth,
+            // the voice is simply opened at its own offset in this quantum and
+            // `mixClicks` writes it after the block is rendered.
+            for (const c of this.clicks) {
+                if (c.pulse >= p0 && c.pulse < segmentEnd) {
+                    this.triggerClick(c.accent, pulseToSampleInSegment(c.pulse));
                 }
             }
             // Phantom noteOffs: deleted-while-playing notes whose voice is still alive.
@@ -760,7 +829,46 @@ export class TransportScheduler {
         }
 
         this.position = p0;
+        this.mixClicks(outputs);
         this.publishState(currentTime, sampleRate);
+    }
+
+    /** Opens a click voice at `at` samples into the quantum being rendered. */
+    private triggerClick(accent: boolean, at: number): void {
+        const data = accent ? this.clickHigh : this.clickLow;
+        if (!data || data.length === 0) return;
+        if (this.activeClicks.length >= MAX_ACTIVE_CLICKS) return;
+        this.activeClicks.push({ data, read: 0, at });
+    }
+
+    /**
+     * Adds every click voice still running into the main stereo pair, AFTER the
+     * synth has written this quantum — `processSplit` fills those buffers rather
+     * than accumulating into them, so a click mixed earlier would be erased by
+     * the next sub-block of the same quantum.
+     *
+     * `outputs[0]` is the dry stereo master in the ordinary mode; under
+     * `oneOutput` it is the first of the sixteen per-channel pairs, which is the
+     * nearest thing to a master that mode has.
+     */
+    private mixClicks(outputs: Float32Array[][]): void {
+        if (this.activeClicks.length === 0) return;
+        const out = outputs[0];
+        const left = out[0];
+        const right = out[1] ?? left;
+        for (let i = this.activeClicks.length - 1; i >= 0; i--) {
+            const voice = this.activeClicks[i];
+            let s = voice.at;
+            while (s < RENDER_QUANTUM && voice.read < voice.data.length) {
+                const sample = voice.data[voice.read++];
+                left[s] += sample;
+                if (right !== left) right[s] += sample;
+                s++;
+            }
+            // Its own offset applied only to the quantum that opened it.
+            voice.at = 0;
+            if (voice.read >= voice.data.length) this.activeClicks.splice(i, 1);
+        }
     }
 
     /**
