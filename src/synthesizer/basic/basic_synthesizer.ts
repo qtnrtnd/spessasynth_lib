@@ -475,6 +475,52 @@ export abstract class BasicSynthesizer {
     }
 
     /**
+     * Starts an auditioned note — one the caller releases with `auditionOff`
+     * and the SAME `noteID`, rather than with a note-off.
+     *
+     * A note-off names a (channel, pitch) pair, not a voice, and a synth
+     * receiving several note-ons on one key releases the oldest of them first
+     * (the MIDI convention for overlapping notes). That is right for a
+     * performance and wrong for an editor sounding the note under the pointer
+     * over a sequence that is already playing: releasing it would end whichever
+     * sequenced note of that key started first. An ID addresses the voice, the
+     * way VST3's `noteId` and CLAP's `note_id` do.
+     *
+     * @param channel Usually 0-15: the channel to play the note.
+     * @param midiNote 0-127 the key number of the note.
+     * @param velocity 0-127 the velocity of the note.
+     * @param noteID An ID of the caller's own, unique among the notes it is
+     * holding. Negative values are reserved for this and can never collide with
+     * the channel's own numbering.
+     */
+    public auditionOn(
+        channel: number,
+        midiNote: number,
+        velocity: number,
+        noteID: number
+    ) {
+        this.post({
+            channelNumber: channel,
+            type: "auditionNote",
+            data: { channel, midiNote, velocity, noteID }
+        });
+    }
+
+    /**
+     * Releases the audition started with `noteID`, and nothing else.
+     * @param channel The channel it was started on.
+     * @param midiNote The key it was started on.
+     * @param noteID The ID given to `auditionOn`.
+     */
+    public auditionOff(channel: number, midiNote: number, noteID: number) {
+        this.post({
+            channelNumber: channel,
+            type: "auditionNote",
+            data: { channel, midiNote, noteID }
+        });
+    }
+
+    /**
      * Stops all notes.
      * @param force If the notes should immediately be stopped, defaults to false.
      */

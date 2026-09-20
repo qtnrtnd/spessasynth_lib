@@ -194,6 +194,15 @@ interface BasicSynthesizerMessageData {
         channelOffset: number;
         options: SynthMethodOptions;
     };
+    // An editor's audition: a note the caller releases by the ID it names here,
+    // never by (channel, pitch) — see `auditionOn` in spessasynth_core.
+    auditionNote: {
+        channel: number;
+        midiNote: number;
+        // Absent = release the note started with this ID.
+        velocity?: number;
+        noteID: number;
+    };
     ccReset: null;
     // Force: (0 false, 1 true) note: if channel is -1 then stop all channels
     stopAll: number;

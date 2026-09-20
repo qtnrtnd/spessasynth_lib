@@ -174,6 +174,16 @@ export abstract class BasicSynthesizerCore {
                 break;
             }
 
+            case "auditionNote": {
+                const { channel: ch, midiNote, velocity, noteID } = m.data;
+                if (velocity === undefined) {
+                    this.synthesizer.auditionOff(ch, midiNote, noteID);
+                } else {
+                    this.synthesizer.auditionOn(ch, midiNote, velocity, noteID);
+                }
+                break;
+            }
+
             case "ccReset": {
                 this.synthesizer.reset();
                 break;
